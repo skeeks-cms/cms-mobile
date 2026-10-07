@@ -1,5 +1,7 @@
 <?php
 return [
+    // Yii Config injects $params into config files, not into Yii::$app->params.
+    'params' => ['cms-mobile' => $params['cms-mobile'] ?? []],
     'bootstrap' => ['mobilePush'],
     'components' => [
         'mobilePush' => ['class' => \skeeks\cms\mobile\components\MobilePush::class],
