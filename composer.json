@@ -1,0 +1,20 @@
+{
+    "name": "skeeks/cms-mobile",
+    "description": "Интеграция SkeekS CMS с мобильными приложениями: устройства и push-уведомления",
+    "type": "yii2-extension",
+    "license": "BSD-3-Clause",
+    "require": {
+        "php": ">=8.0",
+        "skeeks/cms": "^6.4.9.35",
+        "skeeks/cms-job": "^1.4",
+        "google/auth": "^1.48",
+        "guzzlehttp/guzzle": "^7.9"
+    },
+    "autoload": {"psr-4": {"skeeks\\cms\\mobile\\": "src/"}},
+    "extra": {
+        "config-plugin": {
+            "web": ["src/config/common.php", "src/config/web.php"],
+            "console": ["src/config/common.php", "src/config/console.php"]
+        }
+    }
+}
