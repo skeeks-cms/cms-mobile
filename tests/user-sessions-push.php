@@ -159,13 +159,14 @@ class TestPushContext extends skeeks\cms\job\runtime\JobContext {
     public function setCursor(array $cursor) { $this->testCursor = $cursor; }
 }
 class TestPushReporter implements skeeks\cms\job\contracts\JobReporterInterface {
-    public function setStage(string $stage, ?string $message = null): void {}
-    public function setTotal(?int $total): void {}
-    public function advance(int $by = 1): void {}
-    public function countSuccess(int $by = 1): void {}
+    public $result = [], $stages = [], $total = null, $processed = 0, $success = 0, $skipped = 0, $errors = 0;
+    public function setStage(string $stage, ?string $message = null): void { $this->stages[] = [$stage, $message]; }
+    public function setTotal(?int $total): void { $this->total = $total; }
+    public function advance(int $by = 1): void { $this->processed += $by; }
+    public function countSuccess(int $by = 1): void { $this->success += $by; }
     public function countWarning(int $by = 1): void {}
-    public function countError(int $by = 1): void {}
-    public function countSkipped(int $by = 1): void {}
+    public function countError(int $by = 1): void { $this->errors += $by; }
+    public function countSkipped(int $by = 1): void { $this->skipped += $by; }
     public function info(string $message, array $context = []): void {}
     public function warning(string $message, array $context = []): void {}
     public function error(string $message, array $context = []): void {}
@@ -173,7 +174,7 @@ class TestPushReporter implements skeeks\cms\job\contracts\JobReporterInterface 
     public function heartbeat(): void {}
     public function isCancelled(): bool { return false; }
     public function addArtifact(string $type, string $path, array $options = []): skeeks\cms\job\models\CmsJobRunArtifact { throw new LogicException('unused'); }
-    public function setResult(array $result): void {}
+    public function setResult(array $result): void { $this->result = $result; }
 }
 $app->set('jobs', new TestQueue());
 $app->mobilePush->enabled = true;
@@ -190,14 +191,30 @@ $context = new TestPushContext(['deliveryId' => $ids[0]]);
 $handler->run($context, $reporter); $handler->run($context, $reporter);
 check(TestTransport::$calls === 1, 'completed delivery never sent twice');
 check(skeeks\cms\mobile\models\CmsPushDelivery::findOne($ids[0])->status === 'accepted', 'provider acceptance recorded');
+check($reporter->total === 1 && $reporter->processed === 1 && $reporter->success === 1, 'accepted delivery counts once');
+check(array_column($reporter->stages, 0) === ['check', 'send', 'complete'], 'delivery stages recorded');
+$acceptedSnapshot = $reporter->result;
+check(strpos(json_encode($acceptedSnapshot), $input['token']) === false && !isset($acceptedSnapshot['device']['installation_id']), 'snapshot contains no push address or installation secret');
+$app->db->createCommand()->createTable('cms_job_run', ['id' => 'pk', 'status' => 'string', 'payload_json' => 'text', 'result_json' => 'text'])->execute();
+$run = new skeeks\cms\job\models\CmsJobRun(['id' => 1, 'status' => 'succeeded']);
+$run->setPayload(['deliveryId' => $ids[0]]);
+$run->setResult(['deliveryId' => $ids[0], 'status' => 'accepted']);
+$report = new skeeks\cms\mobile\jobs\MobilePushReport();
+$legacyDetails = $report->details($run);
+check($legacyDetails['status'] === 'Принято Firebase' && $legacyDetails['rows']['Платформа'] === 'Android', 'legacy history projects saved delivery');
+check(strpos($legacyDetails['message'], 'не подтверждены') !== false, 'acceptance does not claim receipt');
 $pending = $app->mobilePush->enqueue(1, 'event:2:user:1', '/profile');
 $switch = requestUser($senderSession); $switch->login(TestIdentity::findIdentity(2), 3600);
 check(CmsUserSession::findOne($activeInstall->session_id)->revoked_at !== null, 'lazy identity account switch revokes former session');
 $activeInstall = $app->mobilePush->register($switch->currentSession, $input);
 $otherOwnerIds = $app->mobilePush->enqueue(2, 'event:1:user:1', '/profile');
 check(count($otherOwnerIds) === 1 && $otherOwnerIds !== $ids, 'dedup includes new owner and generation');
+check($report->details($run)['rows']['Приложение'] === '—', 'legacy report does not inherit new owner device metadata');
+$run->setResult($acceptedSnapshot);
+check($report->details($run)['rows']['Приложение'] === 'com.skeeks.mobile', 'new history preserves sending-time device snapshot');
 $handler->run(new TestPushContext(['deliveryId' => $pending[0]]), $reporter);
 check(TestTransport::$calls === 1 && skeeks\cms\mobile\models\CmsPushDelivery::findOne($pending[0])->status === 'cancelled', 'queued old-account delivery cancelled');
+check($reporter->skipped === 1 && $reporter->result['status'] === 'cancelled', 'inactive connection records skipped outcome');
 $pending = $app->mobilePush->enqueue(2, 'event:3:user:2', '/profile');
 $switch->logout();
 $handler->run(new TestPushContext(['deliveryId' => $pending[0]]), $reporter);
@@ -215,6 +232,8 @@ catch (skeeks\cms\job\exceptions\JobPermanentException $e) { check(true, 'unknow
 $calls = TestTransport::$calls; $handler->run($context, $reporter);
 check(TestTransport::$calls === $calls, 'unknown delivery not resent');
 check(skeeks\cms\mobile\models\CmsPushDelivery::findOne($pending[0])->status === 'unknown', 'unknown outcome visible');
+check($reporter->errors === 1 && $reporter->result['status'] === 'unknown', 'uncertain outcome records error and result before exception');
+check(skeeks\cms\mobile\jobs\MobilePushReport::providerCode('secret-token') === 'PROVIDER_ERROR', 'arbitrary adapter errors do not enter public report');
 $activeSession = $retryUser->currentSession;
 $rollbackListener = static function () { throw new RuntimeException('test rollback'); };
 $app->userSessions->on(UserSessions::EVENT_REVOKED, $rollbackListener);
@@ -238,6 +257,9 @@ check($app->mobilePush->canUseBridge(), 'explicit valid app enables bridge');
 $deliveryClass = skeeks\cms\mobile\models\CmsPushDelivery::class;
 $deliveryClass::updateAll(['updated_at' => time() - 40 * 86400], ['id' => $ids[0]]);
 check($app->mobilePush->cleanupDeliveries() === 1, 'retention removes old terminal delivery');
+check($report->details($run)['status'] === 'Принято Firebase', 'saved snapshot survives delivery cleanup');
+$run->setResult([]);
+check($report->details($run)['status'] === 'Сведения об отправке недоступны', 'missing evidence never manufactures success');
 check($deliveryClass::findOne($otherOwnerIds[0]) !== null, 'retention preserves queued delivery');
 class CredentialsFixture extends FcmTransport {
     public function inspect(array &$app) { return get_class($this->createCredentials(null, $app)); }

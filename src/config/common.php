@@ -11,6 +11,7 @@ return [
             'cms.mobile-push' => [
                 'type' => 'cms.mobile-push', 'title' => 'Отправка уведомления на телефон',
                 'handler' => \skeeks\cms\mobile\jobs\MobilePushJobHandler::class,
+                'report' => \skeeks\cms\mobile\jobs\MobilePushReport::class,
                 'queue' => 'mobile-push', 'visibility' => 'visible', 'retentionDays' => 30,
                 'timeout' => 60, 'leaseSeconds' => 90, 'maxAttempts' => 1,
                 'idempotent' => false, 'overlapPolicy' => 'skip',
